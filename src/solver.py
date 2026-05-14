@@ -9,14 +9,14 @@ from .utils.early_stopping import EarlyStopping
 from .utils.useful_functions import get_capacities_from_graph, mask_invalid_paths
 
 
-class LmteSolver(object): 
+class LmteSolver(object):
     """
     Solver class for the LLM-based Traffic Engineering (LMTE) model.
     Handles training, validation, and testing of the LMTE model.
     """
-    
+
     def __init__(
-        self, 
+        self,
         args,
         model,
         topology,
@@ -26,11 +26,12 @@ class LmteSolver(object):
         commodities_to_paths,
         paths_to_edges,
         optimizer,
-        tunnels
-    ): 
+        tunnels,
+        objective='total_flow'
+    ):
         """
         Initialize the LmteSolver.
-        
+
         Args:
             args: Arguments containing model and training parameters
             model: The LMTE model to be trained
@@ -43,18 +44,19 @@ class LmteSolver(object):
             optimizer: Optimizer for training
             tunnels: Tunnels information for the network
         """
-        self.args = args 
+        self.args = args
         self.model = model
-        self.topology = topology 
+        self.topology = topology
+        self.objective = objective
         self.optimizer = optimizer
-        self.accelerator = accelerator 
-        self.train_loader, self.valid_loader = train_loader, valid_loader 
+        self.accelerator = accelerator
+        self.train_loader, self.valid_loader = train_loader, valid_loader
 
         # Move matrices to the appropriate device
-        self.paths_to_edges = paths_to_edges.to(accelerator.device) 
-        self.commodities_to_paths = commodities_to_paths.to(accelerator.device) 
+        self.paths_to_edges = paths_to_edges.to(accelerator.device)
+        self.commodities_to_paths = commodities_to_paths.to(accelerator.device)
         # Initialize early stopping with patience and verbose settings
-        self.early_stopping = EarlyStopping(accelerator, args.patience, verbose=True) 
+        self.early_stopping = EarlyStopping(accelerator, args.patience, verbose=True)
 
         # Initialize network structure data and move to device
         self.edge_index = train_loader.dataset.get_edge_index().to(accelerator.device)
@@ -63,10 +65,10 @@ class LmteSolver(object):
         self.edge_ids_per_path = train_loader.dataset.get_padded_edge_ids_per_path(tunnels).to(accelerator.device)
         self.mandatory_edges = train_loader.dataset.find_mandatory_edges(tunnels)
 
-    def adapt(self, save_path=None, auto_fail=True, auto_burst=True): 
+    def adapt(self, save_path=None, auto_fail=True, auto_burst=True):
         """
         Adapt (train) the LMTE model.
-        
+
         The function performs the following steps:
         1. Initialize the early stopping object.
         2. Create the checkpoint directory.
@@ -82,7 +84,7 @@ class LmteSolver(object):
         12. If early stopping, break the loop.
         13. Load the best model.
         14. Save the model.
-        
+
         Args:
             save_path: Path to save model checkpoints
             auto_fail: Whether to automatically inject link failures during training
@@ -108,35 +110,35 @@ class LmteSolver(object):
                 self.optimizer.zero_grad()
 
                 # Move data to device
-                tms = tms.float().to(self.accelerator.device) 
-                preds = preds.float().to(self.accelerator.device) 
+                tms = tms.float().to(self.accelerator.device)
+                preds = preds.float().to(self.accelerator.device)
 
                 bursty_tensor = None
                 topology = self.topology.copy()
                 capacities = self.capacities
-                node_features = self.node_features 
+                node_features = self.node_features
 
                 # Inject link failures with 10% probability
-                if auto_fail: 
-                    r = torch.randint(0, 10, (1,)).item() / 10 
-                    if r < 0.1: 
-                        node_features, topology, capacities = self.add_failures() 
+                if auto_fail:
+                    r = torch.randint(0, 10, (1,)).item() / 10
+                    if r < 0.1:
+                        node_features, topology, capacities = self.add_failures()
 
                 # Inject traffic bursts with 10% probability
-                if auto_burst: 
-                    r = torch.randint(0, 10, (1,)).item() / 10 
-                    if r < 0.1: 
-                        tms, preds = self.add_bursts(tms, preds) 
-                        bursty_tensor = torch.ones((tms.shape[0],), device=self.accelerator.device) 
+                if auto_burst:
+                    r = torch.randint(0, 10, (1,)).item() / 10
+                    if r < 0.1:
+                        tms, preds = self.add_bursts(tms, preds)
+                        bursty_tensor = torch.ones((tms.shape[0],), device=self.accelerator.device)
 
                 split_ratios = self.model(tms, node_features, self.edge_index, capacities,
-                                          topology, bursty_tensor, self.edge_ids_per_path) 
+                                          topology, bursty_tensor, self.edge_ids_per_path)
 
-                loss = self.loss(split_ratios, preds, topology) 
-                train_losses.append(loss.item()) 
+                loss = self.loss(split_ratios, preds, topology)
+                train_losses.append(loss.item())
 
-                if (i + 1) % 50 == 0: 
-                    self.accelerator.print( 
+                if (i + 1) % 50 == 0:
+                    self.accelerator.print(
                         "\titers: {0}, epoch: {1} | normalized loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
@@ -147,13 +149,13 @@ class LmteSolver(object):
                 if not torch.isnan(loss):
                    self.accelerator.backward(loss)
                    self.optimizer.step()
-            
-            self.accelerator.print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time)) 
+
+            self.accelerator.print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
 
             self.model.eval()
             with torch.no_grad():
 
-                for i, (tms, preds) in enumerate(self.valid_loader): 
+                for i, (tms, preds) in enumerate(self.valid_loader):
                     tms = tms.float().to(self.accelerator.device)
                     preds = preds.float().to(self.accelerator.device)
 
@@ -167,71 +169,71 @@ class LmteSolver(object):
             valid_loss = np.average(valid_losses)
             train_loss = np.average(train_losses)
             self.accelerator.print("Epoch: {0} | Normalized Train Loss: {1:.7f}, Valid Loss: {2:.7f}".format(epoch + 1, train_loss, valid_loss))
-        
+
             self.early_stopping(valid_loss, self.model, save_path)
             if self.early_stopping.early_stop:
                 self.accelerator.print("Early stopping")
                 break
-        
+
         self.accelerator.wait_for_everyone()
-            
+
     @torch.no_grad()
     def test(
-        self, 
-        test_loader, 
-        add_failures=False, 
-        num_failures=1, 
-        add_bursts=False, 
+        self,
+        test_loader,
+        add_failures=False,
+        num_failures=1,
+        add_bursts=False,
         burst_factor=10.
-    ): 
+    ):
         """
         Test the LMTE model on a given test dataset.
-        
+
         Args:
             test_loader: DataLoader for test data
             add_failures: Whether to inject link failures during testing
             num_failures: Number of link failures to inject
             add_bursts: Whether to inject traffic bursts during testing
             burst_factor: Factor by which to scale traffic bursts
-        
+
         Returns:
             List of MLU (Maximum Link Utilization) values for each test sample
         """
         self.model.eval()
-        results = [] 
-        for i, (tms, preds) in enumerate(test_loader): 
+        results = []
+        for i, (tms, preds) in enumerate(test_loader):
             tms = tms.float().to(self.accelerator.device)
-            preds = preds.float().to(self.accelerator.device) 
+            preds = preds.float().to(self.accelerator.device)
 
-            if add_failures: 
-                node_features, topology, capacities = self.add_failures(num_failures) 
+            if add_failures:
+                node_features, topology, capacities = self.add_failures(num_failures)
             else:
                 topology = self.topology
                 capacities = self.capacities
-                node_features = self.node_features 
+                node_features = self.node_features
 
             if add_bursts:
-                tms, preds = self.add_bursts(tms, preds, burst_factor) 
-                bursty_tensor = torch.ones((tms.shape[0],), device=self.accelerator.device) 
+                tms, preds = self.add_bursts(tms, preds, burst_factor)
+                bursty_tensor = torch.ones((tms.shape[0],), device=self.accelerator.device)
             else:
-                bursty_tensor = None 
-            
-            split_ratios = self.model(tms, node_features, self.edge_index, capacities,
-                                      topology, bursty_tensor, self.edge_ids_per_path) 
+                bursty_tensor = None
 
-            result = self.loss(split_ratios, preds, topology, False) 
+            split_ratios = self.model(tms, node_features, self.edge_index, capacities,
+                                      topology, bursty_tensor, self.edge_ids_per_path)
+
+            result = self.loss(split_ratios, preds, topology, False)
             results += result
 
-        self.accelerator.print('Average MLU: ', np.average(results)) 
-        return results 
+        self.accelerator.print('Average MLU: ', np.average(results))
+        return results
 
-    def add_failures(self, num_failures=1): 
+    def add_failures(self, num_failures=1):
         """
         Inject link failures into the network topology.
-        
+
         Args:
             num_failures: Number of link failures to inject
-        
+
         Returns:
             Updated node features, topology, and capacities
         """
@@ -254,19 +256,19 @@ class LmteSolver(object):
         capacities = self.train_loader.dataset.normalize(torch.tensor(capacities))
         return node_features.to(self.accelerator.device), topology, capacities.to(self.accelerator.device)
 
-    def add_bursts(self, histories, preds, scale_factor=10): 
+    def add_bursts(self, histories, preds, scale_factor=10):
         """
         Inject traffic bursts into the traffic matrices.
-        
+
         Args:
             histories: Traffic matrices
             preds: Predicted traffic matrices
             scale_factor: Factor by which to scale traffic bursts
-        
+
         Returns:
             Updated traffic matrices and predictions
         """
-        diff = histories[:, 1:, :] - histories[:, :-1, :] 
+        diff = histories[:, 1:, :] - histories[:, :-1, :]
         variance = diff.var(dim=1, keepdim=True)
         stddev = torch.sqrt(variance * scale_factor)
         noise = torch.randn_like(histories) * stddev
@@ -274,16 +276,16 @@ class LmteSolver(object):
         # histories[:, -1, :] = histories[:, -1, :] * 2
         return histories, preds
 
-    def loss(self, x, targets, topology, train=True): 
+    def loss(self, x, targets, topology, train=True):
         """
         Compute the loss for the LMTE model.
-        
+
         Args:
             x: Split ratios output by the model
             targets: Ground truth traffic matrices
             topology: Network topology information
             train: Whether the loss is being computed for training
-        
+
         Returns:
             Loss value(s)
         """
@@ -295,10 +297,10 @@ class LmteSolver(object):
         commodities_to_paths = mask_invalid_paths(self.commodities_to_paths, self.paths_to_edges, capacities)
         capacities = capacities.float().unsqueeze(-1)
 
-        for i in range(B): 
-            split_ratios = x[[i]] 
-            current_tm = targets[[i]] 
-            split_ratios = torch.transpose(split_ratios, 0, 1) 
+        for i in range(B):
+            split_ratios = x[[i]]
+            current_tm = targets[[i]]
+            split_ratios = torch.transpose(split_ratios, 0, 1)
 
             commodity_total_weight = commodities_to_paths.matmul(split_ratios)
             paths_over_total = commodities_to_paths.transpose(0, 1).matmul(1.0 / commodity_total_weight)
@@ -306,38 +308,45 @@ class LmteSolver(object):
 
             tmp_demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(current_tm.transpose(0, 1)) #shape: (num_paths, 1)
             demand_on_paths = tmp_demand_on_paths.mul(split_ratios) #shape: (num_paths, 1)
-            flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths) #shape: (num_edges, 1)
-            congestion = flow_on_edges[capacities!=0].divide(capacities[capacities!=0]) #shape: (num_edges, 1)
-            max_cong = torch.max(congestion.flatten(), dim = 0).values
 
-            if train:
-                loss = 1.0 - max_cong if max_cong.item() == 0.0 else max_cong / max_cong.item()
-                losses.append(loss)
-            else:
-                loss = max_cong.item()
-                losses.append(loss)
+            if self.objective == 'total_flow':
+                total_flow = demand_on_paths.sum()
+                if train:
+                    loss = -total_flow / (total_flow.item() + 1e-8)
+                    losses.append(loss)
+                else:
+                    losses.append(total_flow.item())
+            else:  # mlu
+                flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths) #shape: (num_edges, 1)
+                congestion = flow_on_edges[capacities!=0].divide(capacities[capacities!=0]) #shape: (num_edges, 1)
+                max_cong = torch.max(congestion.flatten(), dim = 0).values
+                if train:
+                    loss = 1.0 - max_cong if max_cong.item() == 0.0 else max_cong / max_cong.item()
+                    losses.append(loss)
+                else:
+                    losses.append(max_cong.item())
 
         if train:
-            return sum(losses) / len(losses) 
+            return sum(losses) / len(losses)
         else:
             return losses
 
     def load_checkpoint(self, path):
         """
         Load a model checkpoint.
-        
+
         Args:
             path: Path to the checkpoint file
         """
         trainable_state_dict = torch.load(path + '/' + 'checkpoint.pt', map_location=self.accelerator.device)
         model_state_dict = self.model.state_dict()
 
-        for name, param in trainable_state_dict.items(): 
-            if name in model_state_dict: 
+        for name, param in trainable_state_dict.items():
+            if name in model_state_dict:
                 model_state_dict[name].copy_(param)
             elif name.replace("module.", "") in model_state_dict:
                 model_state_dict[name.replace("module.", "")].copy_(param)
-            else: 
+            else:
                 self.accelerator.print(f'Not load {name}')
 
         self.model.load_state_dict(model_state_dict)
