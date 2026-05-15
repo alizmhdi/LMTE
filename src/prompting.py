@@ -2,32 +2,34 @@ import torch
 
 
 def prepare_prompts(
-    topology, 
-    histories, 
+    topology,
+    histories,
     num_paths=8,
-    bursty=None, 
-    additional_info=None 
+    bursty=None,
+    additional_info=None,
+    objective='mlu'
 ):
     """
     Prepare text prompts for the LLM model based on network topology and traffic histories.
-    
+
     Args:
         topology: Network topology with node and edge information
         histories (Tensor): Traffic matrix histories of shape [batch_size, seq_length, num_od_pairs]
         num_paths (int): Number of paths per OD pair to consider as tunnels
         bursty (Tensor): Information about possible traffic bursts (optional)
         additional_info (str): Additional information to include in the prompt (optional)
-        
+        objective (str): Training objective, either 'mlu' or 'total_flow'
+
     Returns:
         List[str]: A list of text prompts, one for each sample in the batch
     """
     # Get batch size from histories tensor
-    B = histories.shape[0] 
-    
+    B = histories.shape[0]
+
     # Extract network information
     failed_links = get_failed_link_ids(topology)  # Get IDs of links with zero capacity
     num_nodes, num_links = len(topology.nodes()), len(topology.edges())
-    
+
     # Compute overall trend of traffic matrices
     overall_trend = compute_overall_trend(histories)
 
@@ -40,9 +42,9 @@ def prepare_prompts(
     bursty = bursty if bursty is not None else torch.zeros_like(mean_values)
 
     # Format link failures information for the prompt
-    if len(failed_links) == 0: 
-        link_failures_prompt_ = "There are no link failures in the network" 
-    else: 
+    if len(failed_links) == 0:
+        link_failures_prompt_ = "There are no link failures in the network"
+    else:
         link_failures_prompt_ = f"Link Failures: {', '.join(map(str, failed_links))}"
 
     # Format additional information for the prompt
@@ -52,47 +54,48 @@ def prepare_prompts(
         conclusion_prompt_ = f"{additional_info}When such events occur, the routing strategy must adjust accordingly"
 
     # Generate prompts for each sample in the batch
-    prompts = [] 
-    for b in range(B): 
+    prompts = []
+    for b in range(B):
         # Determine if there are traffic bursts for this sample
-        if bursty[b] != 0: 
-            traffic_bursts_prompt_ = "There are possible bursts in the future" 
+        if bursty[b] != 0:
+            traffic_bursts_prompt_ = "There are possible bursts in the future"
         else:
-            traffic_bursts_prompt_ = "The burst is unlikely to occur in the future" 
+            traffic_bursts_prompt_ = "The burst is unlikely to occur in the future"
 
         # Construct the full prompt with all relevant information
+        goal_text = "maximize the total routed flow" if objective == 'total_flow' else "minimize the MLU"
         prompt = (
             f"<|start_prompt|>Goal: You are a WAN traffic engineer. Your task is to generate a routing strategy using the provided information. \
-              The strategy should minimize the MLU. " 
+              The strategy should {goal_text}. "
             f"Description: there are {str(num_nodes)} nodes and {str(num_links)} edges in the WAN; "
-            f"the shortest {num_paths} paths are selected as tunnels; " 
-            f"the overall trend of historical TMs is {'upward' if overall_trend[b] > 0 else 'downward'}; " 
-            f"the value of minimum, maximum, mean is {min_values[b]}, {max_values[b]}, and {mean_values[b]} respectively; " 
-            "Domain Knowledge: " 
-            f"{link_failures_prompt_}; " 
-            f"{traffic_bursts_prompt_}; " 
+            f"the shortest {num_paths} paths are selected as tunnels; "
+            f"the overall trend of historical TMs is {'upward' if overall_trend[b] > 0 else 'downward'}; "
+            f"the value of minimum, maximum, mean is {min_values[b]}, {max_values[b]}, and {mean_values[b]} respectively; "
+            "Domain Knowledge: "
+            f"{link_failures_prompt_}; "
+            f"{traffic_bursts_prompt_}; "
             f"{conclusion_prompt_}<|end_prompt|>"
-        ) 
+        )
 
         prompts.append(prompt)
 
     return prompts
 
 
-def get_failed_link_ids(topology): 
+def get_failed_link_ids(topology):
     """
     Identify links in the topology that have failed (capacity = 0).
-    
+
     Args:
         topology: Network topology with node and edge information
-        
+
     Returns:
         List of tuples representing failed links as (source_node, target_node)
     """
-    links = [] 
-    for u, v, data in topology.edges(data=True): 
-        if float(data['capacity']) == 0.: 
-            links.append((u, v)) 
+    links = []
+    for u, v, data in topology.edges(data=True):
+        if float(data['capacity']) == 0.:
+            links.append((u, v))
     return links
 
 

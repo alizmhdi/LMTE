@@ -1,10 +1,11 @@
 import os
 import time
+import csv
 import torch
 import random
 import numpy as np
 
-from .objective import compute_mlus
+from .objective import compute_mlus, compute_total_flows
 from .utils.early_stopping import EarlyStopping
 from .utils.useful_functions import get_capacities_from_graph, mask_invalid_paths
 
@@ -162,15 +163,43 @@ class LmteSolver(object):
                     split_ratios = self.model(tms, self.node_features, self.edge_index, self.capacities,
                                               self.topology, None, self.edge_ids_per_path)
 
-                    mlus = compute_mlus(split_ratios, preds, self.topology, self.paths_to_edges, self.commodities_to_paths,
-                                       scale=self.valid_loader.dataset.scale)
-                    valid_losses += mlus
+                    if self.objective == 'total_flow':
+                        routed = compute_total_flows(
+                            split_ratios,
+                            preds,
+                            self.topology,
+                            self.paths_to_edges,
+                            self.commodities_to_paths,
+                            scale=self.valid_loader.dataset.scale,
+                            normalize_by_demand=True,
+                        )
+                        valid_losses += routed
+                    else:
+                        mlus = compute_mlus(
+                            split_ratios,
+                            preds,
+                            self.topology,
+                            self.paths_to_edges,
+                            self.commodities_to_paths,
+                            scale=self.valid_loader.dataset.scale,
+                        )
+                        valid_losses += mlus
 
-            valid_loss = np.average(valid_losses)
+            valid_metric = np.average(valid_losses)
             train_loss = np.average(train_losses)
-            self.accelerator.print("Epoch: {0} | Normalized Train Loss: {1:.7f}, Valid Loss: {2:.7f}".format(epoch + 1, train_loss, valid_loss))
+            metric_name = 'Valid Routed Fraction' if self.objective == 'total_flow' else 'Valid MLU'
+            self.accelerator.print(
+                "Epoch: {0} | Normalized Train Loss: {1:.7f}, {2}: {3:.7f}".format(
+                    epoch + 1,
+                    train_loss,
+                    metric_name,
+                    valid_metric,
+                )
+            )
 
-            self.early_stopping(valid_loss, self.model, save_path)
+            # EarlyStopping is implemented as a minimizer over val_loss.
+            early_stop_value = -valid_metric if self.objective == 'total_flow' else valid_metric
+            self.early_stopping(early_stop_value, self.model, save_path)
             if self.early_stopping.early_stop:
                 self.accelerator.print("Early stopping")
                 break
@@ -197,10 +226,14 @@ class LmteSolver(object):
             burst_factor: Factor by which to scale traffic bursts
 
         Returns:
-            List of MLU (Maximum Link Utilization) values for each test sample
+            List of test metric values for each sample
+            (MLU when objective is 'mlu', total routed demand when objective is 'total_flow')
         """
         self.model.eval()
         results = []
+        demand_rows = []
+        mlu_rows = []
+        sample_idx = 0
         for i, (tms, preds) in enumerate(test_loader):
             tms = tms.float().to(self.accelerator.device)
             preds = preds.float().to(self.accelerator.device)
@@ -221,11 +254,110 @@ class LmteSolver(object):
             split_ratios = self.model(tms, node_features, self.edge_index, capacities,
                                       topology, bursty_tensor, self.edge_ids_per_path)
 
-            result = self.loss(split_ratios, preds, topology, False)
-            results += result
+            if self.objective == 'total_flow':
+                batch_metrics = self._compute_routed_demand_metrics(split_ratios, preds, topology)
+                for total_demand, total_satisfied, routed_fraction in batch_metrics:
+                    demand_rows.append((sample_idx, total_demand, total_satisfied, routed_fraction))
+                    sample_idx += 1
 
-        self.accelerator.print('Average MLU: ', np.average(results))
+            if self.objective == 'total_flow':
+                result = compute_total_flows(
+                    split_ratios,
+                    preds,
+                    topology,
+                    self.paths_to_edges,
+                    self.commodities_to_paths,
+                    scale=test_loader.dataset.scale,
+                    normalize_by_demand=True,
+                )
+            else:
+                result = compute_mlus(
+                    split_ratios,
+                    preds,
+                    topology,
+                    self.paths_to_edges,
+                    self.commodities_to_paths,
+                    scale=test_loader.dataset.scale,
+                )
+            results += result
+            if self.objective == 'mlu':
+                for mlu_value in result:
+                    mlu_rows.append((sample_idx, float(mlu_value)))
+                    sample_idx += 1
+
+        results_dir = os.path.join(self.args.result_path, f'{self.args.topology}_lmte')
+        os.makedirs(results_dir, exist_ok=True)
+        csv_path = None
+
+        if self.objective == 'total_flow':
+            routed_fractions = [row[3] for row in demand_rows]
+            avg_routed_fraction = float(np.average(routed_fractions)) if routed_fractions else 0.0
+            max_routed_fraction = float(np.max(routed_fractions)) if routed_fractions else 0.0
+            csv_path = os.path.join(results_dir, f'demand_routing_metrics_{int(time.time())}.csv')
+
+            if self.accelerator.is_main_process:
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['sample_index', 'total_demand', 'total_satisfied_demand', 'routed_fraction'])
+                    writer.writerows(demand_rows)
+        else:
+            csv_path = os.path.join(results_dir, f'mlu_metrics_{int(time.time())}.csv')
+            if self.accelerator.is_main_process:
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['sample_index', 'mlu'])
+                    writer.writerows(mlu_rows)
+
+        self.accelerator.wait_for_everyone()
+        if self.objective == 'total_flow':
+            self.accelerator.print(f'Demand routing CSV saved to: {csv_path}')
+            self.accelerator.print(f'Average routed-demand fraction: {avg_routed_fraction:.6f}')
+            self.accelerator.print(f'Max routed-demand fraction: {max_routed_fraction:.6f}')
+            self.accelerator.print('Average routed-demand fraction (from objective metric): ', np.average(results))
+            self.accelerator.print('Maximum routed-demand fraction (from objective metric): ', np.max(results))
+        else:
+            self.accelerator.print(f'MLU CSV saved to: {csv_path}')
+            self.accelerator.print('Average MLU: ', np.average(results))
+            self.accelerator.print('Maximum MLU: ', np.max(results))
         return results
+
+    def _compute_routed_demand_metrics(self, x, targets, topology):
+        """Compute total demand, total satisfied demand and routed fraction per sample."""
+        B, _ = targets.shape
+        device = targets.device
+        scale = self.train_loader.dataset.scale
+        capacities = torch.tensor(get_capacities_from_graph(topology), device=device) / scale
+        commodities_to_paths = mask_invalid_paths(self.commodities_to_paths, self.paths_to_edges, capacities)
+
+        metrics = []
+        for i in range(B):
+            split_ratios = x[[i]]
+            current_tm = targets[[i]]
+            split_ratios = torch.transpose(split_ratios, 0, 1)
+
+            commodity_total_weight = commodities_to_paths.matmul(split_ratios)
+            paths_over_total = commodities_to_paths.transpose(0, 1).matmul(1.0 / commodity_total_weight)
+            split_ratios = split_ratios.mul(paths_over_total)
+
+            tmp_demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(current_tm.transpose(0, 1))
+            demand_on_paths = tmp_demand_on_paths.mul(split_ratios)
+
+            cap = capacities.float().unsqueeze(-1).to(device)
+            cap_clamped = cap.clamp(min=1e-8)
+            flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths)
+            max_cong = float(torch.max(flow_on_edges / cap_clamped).item())
+            sf = min(1.0, 1.0 / max_cong) if max_cong > 0 else 1.0
+            total_satisfied_demand = demand_on_paths.sum() * sf
+            total_demand = current_tm.sum()
+            routed_fraction = total_satisfied_demand / (total_demand + 1e-8)
+            metrics.append(
+                (
+                    float(total_demand.item()),
+                    float(total_satisfied_demand.item()),
+                    float(routed_fraction.item()),
+                )
+            )
+        return metrics
 
     def add_failures(self, num_failures=1):
         """
@@ -308,18 +440,20 @@ class LmteSolver(object):
 
             tmp_demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(current_tm.transpose(0, 1)) #shape: (num_paths, 1)
             demand_on_paths = tmp_demand_on_paths.mul(split_ratios) #shape: (num_paths, 1)
-
+            flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths)
+            congestion = flow_on_edges[capacities!=0].divide(capacities[capacities!=0]) #shape: (num_edges, 1)
+            max_cong = torch.max(congestion.flatten(), dim = 0).values
             if self.objective == 'total_flow':
-                total_flow = demand_on_paths.sum()
+                scale_factor = (1.0 / max_cong).clamp(max=1.0)
+                total_demand = current_tm.sum()
+                total_flow = demand_on_paths.sum() * scale_factor
+
                 if train:
-                    loss = -total_flow / (total_flow.item() + 1e-8)
+                    loss = -total_flow/(total_demand + 1e-8)
                     losses.append(loss)
                 else:
                     losses.append(total_flow.item())
             else:  # mlu
-                flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths) #shape: (num_edges, 1)
-                congestion = flow_on_edges[capacities!=0].divide(capacities[capacities!=0]) #shape: (num_edges, 1)
-                max_cong = torch.max(congestion.flatten(), dim = 0).values
                 if train:
                     loss = 1.0 - max_cong if max_cong.item() == 0.0 else max_cong / max_cong.item()
                     losses.append(loss)

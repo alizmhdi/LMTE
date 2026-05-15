@@ -7,7 +7,7 @@ class EarlyStopping:
     def __init__(self, accelerator=None, patience=7, verbose=False, delta=0):
         """
         Initialize the EarlyStopping object.
-        
+
         Args:
             accelerator: Accelerator object for multi-GPU training (e.g., Hugging Face Accelerate)
             patience (int): Number of epochs to wait before early stopping once no improvement is observed
@@ -20,13 +20,13 @@ class EarlyStopping:
         self.counter = 0                # Counter for epochs without improvement
         self.best_score = None          # Best validation score seen so far
         self.early_stop = False         # Flag to indicate if training should stop
-        self.val_loss_min = np.Inf      # Minimum validation loss seen so far
+        self.val_loss_min = np.inf      # Minimum validation loss seen so far
         self.delta = delta              # Minimum change to qualify as improvement
 
     def __call__(self, val_loss, model, path):
         """
         Call method to check if validation loss has improved and update early stopping status.
-        
+
         Args:
             val_loss: Current validation loss
             model: Model to save if validation loss improves
@@ -34,7 +34,7 @@ class EarlyStopping:
         """
         # Convert loss to score (higher is better, so we use negative loss)
         score = -val_loss
-        
+
         # If this is the first call, set the best score and save the model
         if self.best_score is None:
             self.best_score = score
@@ -61,7 +61,7 @@ class EarlyStopping:
     def save_checkpoint(self, val_loss, model, path):
         """
         Save the model checkpoint when validation loss decreases.
-        
+
         Args:
             val_loss: Current validation loss
             model: Model to save
@@ -83,13 +83,13 @@ class EarlyStopping:
         #     torch.save(model.state_dict(), path + '/' + 'checkpoint')
         # else:
         #     torch.save(model.state_dict(), path + '/' + 'checkpoint')
-        
+
         # Update the minimum validation loss
         self.val_loss_min = val_loss
 
         # Save only trainable parameters to reduce checkpoint size
         trainable_state_dict = {name: param.detach().cpu() for name, param in model.named_parameters() if param.requires_grad}
-        
+
         # Use accelerator to save the model if available
         if self.accelerator is not None:
             self.accelerator.save(trainable_state_dict, path + '/' + 'checkpoint.pt')

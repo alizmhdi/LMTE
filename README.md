@@ -23,18 +23,18 @@
     <img src='figs/theme.jpg' width='100%' align=center />
 </p>
 
-> **Authors:** [Xinyu Yuan](https://y-debug-sys.github.io/), [Yan Qiao](https://faculty.hfut.edu.cn/qiaoyan/en/index.htm), [Zonghui Wang](https://person.zju.edu.cn/en/zhwang), [Meng Li](https://ubiplab.github.io/MengLi_CV.github.io/) & [Wenzhi Chen](http://arc.zju.edu.cn/64010/list.htm) <br> 
+> **Authors:** [Xinyu Yuan](https://y-debug-sys.github.io/), [Yan Qiao](https://faculty.hfut.edu.cn/qiaoyan/en/index.htm), [Zonghui Wang](https://person.zju.edu.cn/en/zhwang), [Meng Li](https://ubiplab.github.io/MengLi_CV.github.io/) & [Wenzhi Chen](http://arc.zju.edu.cn/64010/list.htm) <br>
 >  🎉 *[The paper](src/camera_ready/INFOCOM_2026__Camera_Ready.pdf) has been accepted by [INFOCOM 2026](https://infocom2026.ieee-infocom.org/).*
 
 ## 📄 Introduction
 
-In this repo, we implement a novel wide-area-network traffic engineering (WAN TE) framework called ***Lᴍᴛᴇ***, that leverages language models to reason about the WAN TE problem. At a high level, the framework consists of four main components: 1️⃣ domain-aware prompt, 2️⃣ invariant multimodal embedding, 3️⃣ embedding2language alignment, and 4️⃣ lightweight planning head. Lᴍᴛᴇ is the first LM-driven framework that supports effective multimodal alignment and efficient configuration generation both in theory and in practice, while preserving the capabilities of pre-trained LMs. 
+In this repo, we implement a novel wide-area-network traffic engineering (WAN TE) framework called ***Lᴍᴛᴇ***, that leverages language models to reason about the WAN TE problem. At a high level, the framework consists of four main components: 1️⃣ domain-aware prompt, 2️⃣ invariant multimodal embedding, 3️⃣ embedding2language alignment, and 4️⃣ lightweight planning head. Lᴍᴛᴇ is the first LM-driven framework that supports effective multimodal alignment and efficient configuration generation both in theory and in practice, while preserving the capabilities of pre-trained LMs.
 
-### 🎨 Key Features 
+### 🎨 Key Features
 
-- [x] Core implementation of the proposed approach  
-- [x] Scripts for fine-tuning and evaluation  
-- [x] Baseline implementation support 
+- [x] Core implementation of the proposed approach
+- [x] Scripts for fine-tuning and evaluation
+- [x] Baseline implementation support
 
 ## 📁 Repo Structure
 
@@ -49,7 +49,7 @@ In this repo, we implement a novel wide-area-network traffic engineering (WAN TE
 ├── src/                 # Implementation of Lᴍᴛᴇ
 ├── deepspeed_cfg.json   # DeepSpeed configuration file
 ├── main.py              # Main entry point
-├── README.md            
+├── README.md
 └── requirements.txt
 ```
 
@@ -85,7 +85,7 @@ modelscope download --model LLM-Research/Meta-Llama-2-13B --local_dir Meta-Llama
 
 > ⚠️ **Note:** Redistribution of the model weights is prohibited by Meta’s license. Each user must request access individually. Visit the official Meta LLaMA model request page:
    👉 [https://ai.meta.com/resources/models-and-libraries/llama](https://ai.meta.com/resources/models-and-libraries/llama)
-   Fill out the request form and wait for approval. Once approved, you will receive download instructions via email. 
+   Fill out the request form and wait for approval. Once approved, you will receive download instructions via email.
 
 ## 🚀 Getting Started
 
@@ -120,7 +120,7 @@ This codebase is licensed under the [Apache License](https://opensource.org/lice
 
 ## 🔗 Contact
 
-For any technical questions about the paper, please contact [Xinyu Yuan](mailto:yxy5315@gmail.com) (yxy5315@gmail.com) or open an issue on this repository. 
+For any technical questions about the paper, please contact [Xinyu Yuan](mailto:yxy5315@gmail.com) (yxy5315@gmail.com) or open an issue on this repository.
 
 ## 🔖 Citation
 

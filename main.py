@@ -44,19 +44,19 @@ def parse_args():
 
     # Experiment status and configuration arguments
     parser.add_argument('--is_training', type=int, default=1, help='status')
-    parser.add_argument("--num_paths", type=int, default=8,
+    parser.add_argument("--num_paths", type=int, default=4,
                         help="Number of optimized tunnels per OD pair for searching.")
     parser.add_argument('--window_size', type=int, default=12,
                         help='history traffic matrix sequence length')
-    parser.add_argument("--scale", type=int, default=10**9, help="Normalized scale.")
+    parser.add_argument("--scale", type=int, default=1, help="Normalized scale.")
     parser.add_argument('--checkpoint_path', type=str, default='./checkpoints/',
                         help='location of model checkpoints')
     parser.add_argument('--result_path', type=str, default='./results/',
-                        help='location of computed mlus')
+                        help='location of computed test metrics')
 
     # Model architecture arguments
     parser.add_argument('--llm_dim', type=int, default='4096', help='LLM model dimension')
-    parser.add_argument('--llm_layers', type=int, default=1, help='LLM model layers')
+    parser.add_argument('--llm_layers', type=int, default=4, help='LLM model layers')
     parser.add_argument('--d_keys', type=int, default=32, help='dimension of fcn')
     parser.add_argument('--n_heads', type=int, default=4, help='num of heads')
     parser.add_argument('--d_model', type=int, default=32, help='dimension of model')
@@ -101,10 +101,15 @@ if __name__ == '__main__':
     args = parse_args()
     set_seed(args.seed)  # Set random seed for reproducibility
 
-    # Configure distributed training with Accelerate
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)  # DDP config
-    deepspeed_plugin = DeepSpeedPlugin(hf_ds_config='./deepspeed_cfg.json')  # DeepSpeed config
-    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs], deepspeed_plugin=deepspeed_plugin)  # Accelerator config
+    # Configure distributed training with Accelerate.
+    # DeepSpeed ZeRO can be unstable with a single process, so only enable it for multi-process runs.
+    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    if world_size > 1:
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)  # DDP config
+        deepspeed_plugin = DeepSpeedPlugin(hf_ds_config='./deepspeed_cfg.json')  # DeepSpeed config
+        accelerator = Accelerator(kwargs_handlers=[ddp_kwargs], deepspeed_plugin=deepspeed_plugin)
+    else:
+        accelerator = Accelerator()
 
     # Load network topology and capacities from file
     topo, capacities = read_graph_from_json(args.topology_filepath)
@@ -155,7 +160,7 @@ if __name__ == '__main__':
         model = LmteModel(args.d_model, args.llm_dim, num_nodes, num_paths, num_edges, args.num_gnn_layers, args.num_rnn_layers,
                           args.num_dnn_layers, args.d_keys, args.window_size, args.n_heads, args.dropout, d_middle=args.d_model,
                           llm_layers=args.llm_layers, llm_model=args.llm_model, max_length=max_path_length,
-                          use_divide_head=args.is_divide).float()
+                          use_divide_head=args.is_divide, objective=args.objective).float()
 
         # Collect parameters that require training
         trained_parameters = []
@@ -194,13 +199,14 @@ if __name__ == '__main__':
     if not os.path.exists(results_save_path):
         os.makedirs(results_save_path)
 
-    # Determine the appropriate filename based on whether failures or bursts were added
+    # Determine the appropriate filename based on objective and test perturbation settings.
+    metric_tag = 'mlu' if args.objective == 'mlu' else 'total_flow'
     if args.add_failures:
-        save_filename = '/mlu_results_f.npy'
+        save_filename = f'/{metric_tag}_results_f.npy'
     elif args.add_bursts:
-        save_filename = '/mlu_results_b.npy'
+        save_filename = f'/{metric_tag}_results_b.npy'
     else:
-        save_filename = '/mlu_results.npy'
+        save_filename = f'/{metric_tag}_results.npy'
 
     # Save the results as a numpy array
     np.save(results_save_path + save_filename, np.array(results))

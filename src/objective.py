@@ -5,18 +5,18 @@ from .utils.useful_functions import get_capacities_from_graph, mask_invalid_path
 
 
 def compute_mlus(
-    x, 
-    tm, 
-    topology, 
-    paths_to_edges, 
-    commodities_to_paths, 
+    x,
+    tm,
+    topology,
+    paths_to_edges,
+    commodities_to_paths,
     add_failures=False,
     num_failures=1,
     scale=1.
 ):
     """
     Compute Maximum Link Utilization (MLU) for each sample in the batch.
-    
+
     Args:
         x: Path split ratios of shape [batch_size, num_paths * num_commodities]
         tm: Traffic matrices of shape [batch_size, num_commodities]
@@ -26,7 +26,7 @@ def compute_mlus(
         add_failures (bool): Whether to simulate link failures
         num_failures (int): Number of link failures to simulate
         scale (float): Scaling factor for capacities
-        
+
     Returns:
         List of MLU values for each sample in the batch
     """
@@ -65,7 +65,7 @@ def compute_mlus(
         paths_over_total = c_2_p.transpose(0, 1).matmul(1.0 / commodity_total_weight)
         # Adjust split ratios based on redistribution
         split_ratios = split_ratios.mul(paths_over_total)
-        
+
         # Calculate demand on each path
         tmp_demand_on_paths = c_2_p.transpose(0, 1).matmul(true_tm.transpose(0, 1))  # Shape: (num_paths, 1)
         demand_on_paths = tmp_demand_on_paths.mul(split_ratios)  # Shape: (num_paths, 1)
@@ -77,5 +77,80 @@ def compute_mlus(
         max_cong = torch.max(congestion.flatten(), dim = 0).values
 
         mlus.append(max_cong.item())  # Add the MLU value to the list
-    
+
     return mlus
+
+
+def compute_total_flows(
+    x,
+    tm,
+    topology,
+    paths_to_edges,
+    commodities_to_paths,
+    add_failures=False,
+    num_failures=1,
+    scale=1.,
+    normalize_by_demand=True,
+):
+    """
+    Compute total routed demand for each sample in the batch.
+
+    Args:
+        x: Path split ratios of shape [batch_size, num_paths * num_commodities]
+        tm: Traffic matrices of shape [batch_size, num_commodities]
+        topology: Network topology with capacity information
+        paths_to_edges: Matrix mapping paths to edges [num_paths, num_edges]
+        commodities_to_paths: Matrix mapping commodities to paths [num_commodities, num_paths]
+        add_failures (bool): Whether to simulate link failures
+        num_failures (int): Number of link failures to simulate
+        scale (float): Scaling factor for capacities
+
+    Returns:
+        List of routed values for each sample in the batch.
+        If normalize_by_demand=True, returns routed-demand fraction in [0, 1].
+        Otherwise returns total routed demand.
+    """
+    total_flows = []
+    B, _ = tm.shape
+
+    if not add_failures:
+        capacity = torch.tensor(get_capacities_from_graph(topology)) / scale
+        c_2_p = mask_invalid_paths(commodities_to_paths, paths_to_edges, capacity.to(tm.device))
+
+    for i in range(B):
+        if add_failures:
+            new_topology, _ = inject_link_failures_by_zero_capacity(topology, num_failures, seed=i)
+            capacity = torch.tensor(get_capacities_from_graph(new_topology)) / scale
+            c_2_p = mask_invalid_paths(commodities_to_paths, paths_to_edges, capacity.to(tm.device))
+
+        split_ratios = x[[i]]
+        true_tm = tm[[i]]
+        split_ratios = torch.transpose(split_ratios, 0, 1)
+
+        commodity_total_weight = c_2_p.matmul(split_ratios)
+        paths_over_total = c_2_p.transpose(0, 1).matmul(1.0 / commodity_total_weight)
+        split_ratios = split_ratios.mul(paths_over_total)
+
+        tmp_demand_on_paths = c_2_p.transpose(0, 1).matmul(true_tm.transpose(0, 1))
+        demand_on_paths = tmp_demand_on_paths.mul(split_ratios)
+
+        # Enforce capacity constraints: compute congestion on each edge and scale
+        # down demand proportionally if any link is over capacity.
+        cap = torch.tensor(get_capacities_from_graph(topology if not add_failures else new_topology),
+                           dtype=torch.float32, device=true_tm.device) / scale
+        cap = cap.unsqueeze(-1)  # [num_edges, 1]
+        cap[cap == 0] = 1e-8     # avoid division by zero on failed links
+        flow_on_edges = paths_to_edges.transpose(0, 1).matmul(demand_on_paths)  # [num_edges, 1]
+        congestion = flow_on_edges / cap  # [num_edges, 1]
+        max_cong = torch.max(congestion).item()
+        # If max_cong > 1, scale the total routed flow down by the bottleneck factor
+        scale_factor = min(1.0, 1.0 / max_cong) if max_cong > 0 else 1.0
+        total_flow = demand_on_paths.sum() * scale_factor
+        if normalize_by_demand:
+            total_demand = true_tm.sum()
+            routed_value = total_flow / (total_demand + 1e-8)
+            total_flows.append(routed_value.item())
+        else:
+            total_flows.append(total_flow.item())
+
+    return total_flows
