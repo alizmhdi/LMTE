@@ -56,7 +56,7 @@ def parse_args():
 
     # Model architecture arguments
     parser.add_argument('--llm_dim', type=int, default='4096', help='LLM model dimension')
-    parser.add_argument('--llm_layers', type=int, default=4, help='LLM model layers')
+    parser.add_argument('--llm_layers', type=int, default=8, help='LLM model layers')
     parser.add_argument('--d_keys', type=int, default=32, help='dimension of fcn')
     parser.add_argument('--n_heads', type=int, default=4, help='num of heads')
     parser.add_argument('--d_model', type=int, default=32, help='dimension of model')

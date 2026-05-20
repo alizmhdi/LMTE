@@ -43,7 +43,6 @@ def _sample_tm_normal(
     max_demand: float,
 ) -> np.ndarray:
     tm = rng.uniform(0.0, max_demand, size=(n, n)).astype(np.float32)
-    tm = np.clip(tm, 0.0, max_demand)
     np.fill_diagonal(tm, 0.0)
     return tm
 
@@ -69,21 +68,9 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
-        "--load-min",
-        type=float,
-        default=0.25,
-        help="Minimum load ratio vs total directed capacity",
-    )
-    parser.add_argument(
-        "--load-max",
-        type=float,
-        default=0.70,
-        help="Maximum load ratio vs total directed capacity",
-    )
-    parser.add_argument(
         "--normal-max-demand",
         type=float,
-        default=2500.0,
+        default=500.0,
         help="Maximum per-entry demand for normal model after clipping",
     )
 
@@ -91,8 +78,6 @@ def main():
 
     if args.num_samples <= 0:
         raise ValueError("--num-samples must be > 0")
-    if not (0 < args.load_min <= args.load_max):
-        raise ValueError("Require 0 < --load-min <= --load-max")
     if args.normal_max_demand <= 0:
         raise ValueError("--normal-max-demand must be > 0")
 
@@ -113,12 +98,6 @@ def main():
                 args.normal_max_demand,
             )
 
-        target_total = rng.uniform(args.load_min, args.load_max) * total_capacity
-        tm = _rescale_tm_to_load(tm, target_total)
-        if args.model == "normal":
-            # Keep all normal-model demands in the requested range.
-            tm = np.clip(tm, 0.0, args.normal_max_demand)
-            np.fill_diagonal(tm, 0.0)
         rows[t] = tm.reshape(-1)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

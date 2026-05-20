@@ -20,7 +20,7 @@ accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_po
   --topology_filepath ./data/Abilene/topology.json \
   --tm_filepath ./data/Abilene/Abilene_normal.csv \
   --is_training 1 \
-  --num_itrs 3 \
+  --num_itrs 1 \
   --train_epochs 10 \
   --patience 3 \
   --d_keys 32 \
@@ -37,26 +37,26 @@ accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_po
   --objective 'total_flow'
 
 # test
-accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_port $PORT main.py \
-  --topology Abilene \
-  --topology_filepath ./data/Abilene/topology.json \
-  --tm_filepath ./data/Abilene/Abilene_normal.csv \
-  --is_training 0 \
-  --num_itrs 3 \
-  --train_epochs 10 \
-  --patience 3 \
-  --d_keys 32 \
-  --d_model 32 \
-  --llm_model llama-8b \
-  --llm_dim '4096' \
-  --batch_size $batch_size \
-  --eval_batch_size $eval_batch_size \
-  --llm_layers $llama_layers \
-  --scale $normlized_scale \
-  --num_paths $num_tunnels \
-  --window_size $history_length \
-  --learning_rate $learning_rate \
-  --objective 'total_flow'
+# accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_port $PORT main.py \
+#   --topology Abilene \
+#   --topology_filepath ./data/Abilene/topology.json \
+#   --tm_filepath ./data/Abilene/Abilene_normal.csv \
+#   --is_training 0 \
+#   --num_itrs 1 \
+#   --train_epochs 10 \
+#   --patience 3 \
+#   --d_keys 32 \
+#   --d_model 32 \
+#   --llm_model llama-8b \
+#   --llm_dim '4096' \
+#   --batch_size $batch_size \
+#   --eval_batch_size $eval_batch_size \
+#   --llm_layers $llama_layers \
+#   --scale $normlized_scale \
+#   --num_paths $num_tunnels \
+#   --window_size $history_length \
+#   --learning_rate $learning_rate \
+#   --objective 'total_flow'
 
 
 # Second experiment: Test the trained model with link failures
