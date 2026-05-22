@@ -116,36 +116,50 @@ def compute_total_flows(
     if not add_failures:
         capacity = torch.tensor(get_capacities_from_graph(topology)) / scale
         c_2_p = mask_invalid_paths(commodities_to_paths, paths_to_edges, capacity.to(tm.device))
+        capacity = capacity.float().unsqueeze(-1).to(tm.device)
 
     for i in range(B):
         if add_failures:
             new_topology, _ = inject_link_failures_by_zero_capacity(topology, num_failures, seed=i)
             capacity = torch.tensor(get_capacities_from_graph(new_topology)) / scale
             c_2_p = mask_invalid_paths(commodities_to_paths, paths_to_edges, capacity.to(tm.device))
+            capacity = capacity.float().unsqueeze(-1).to(tm.device)
 
-        split_ratios = x[[i]]
-        true_tm = tm[[i]]
-        split_ratios = torch.transpose(split_ratios, 0, 1)
+        true_tm = tm[[i]]  # [1, num_commodities]
 
-        commodity_total_weight = c_2_p.matmul(split_ratios)
+        # normalize model output to valid split ratios (x_p sum to 1 per commodity)
+        w_p = x[[i]].transpose(0, 1)  # [num_paths, 1]
+        commodity_total_weight = c_2_p.matmul(w_p)
         paths_over_total = c_2_p.transpose(0, 1).matmul(1.0 / commodity_total_weight)
-        split_ratios = split_ratios.mul(paths_over_total)
+        x_p = w_p.mul(paths_over_total)
 
-        tmp_demand_on_paths = c_2_p.transpose(0, 1).matmul(true_tm.transpose(0, 1))
-        demand_on_paths = tmp_demand_on_paths.mul(split_ratios)
+        # demand-proportional tunnel weights — DOTE's raw w_p
+        demand_on_paths = c_2_p.transpose(0, 1).matmul(
+            true_tm.transpose(0, 1)
+        ) * x_p  # [num_paths, 1]
 
-        # Enforce capacity constraints: compute congestion on each edge and scale
-        # down demand proportionally if any link is over capacity.
-        cap = torch.tensor(get_capacities_from_graph(topology if not add_failures else new_topology),
-                           dtype=torch.float32, device=true_tm.device) / scale
-        cap = cap.unsqueeze(-1)  # [num_edges, 1]
-        cap[cap == 0] = 1e-8     # avoid division by zero on failed links
-        flow_on_edges = paths_to_edges.transpose(0, 1).matmul(demand_on_paths)  # [num_edges, 1]
-        congestion = flow_on_edges / cap  # [num_edges, 1]
-        max_cong = torch.max(congestion).item()
-        # If max_cong > 1, scale the total routed flow down by the bottleneck factor
-        scale_factor = min(1.0, 1.0 / max_cong) if max_cong > 0 else 1.0
-        total_flow = demand_on_paths.sum() * scale_factor
+        # edge loads from demand-proportional weights
+        edge_loads = paths_to_edges.transpose(0, 1).matmul(demand_on_paths)  # [num_edges, 1]
+
+        # Step 4: γ = max_e(edge_load / c(e)) — no clamp to 1, matching DOTE reference
+        if (capacity != 0).any():
+            gamma = (
+                edge_loads[capacity != 0] / capacity[capacity != 0]
+            ).max().clamp(min=1e-8)
+        else:
+            gamma = torch.tensor(1e-8, dtype=torch.float32, device=tm.device)
+
+        # Step 5: ω_p = w_p / γ — capacity-feasible flow caps
+        omega_p = demand_on_paths / gamma  # [num_paths, 1]
+
+        # Step 6: max flow per commodity = Σ_{p ∈ P_{st}} ω_p
+        max_flow_per_commodity = c_2_p.matmul(omega_p)  # [num_commodities, 1]
+
+        # Step 7: f_{st} = min(max_flow_st, D_{st});  total flow = Σ_{st} f_{st}
+        total_flow = torch.sum(
+            torch.minimum(max_flow_per_commodity, true_tm.transpose(0, 1))
+        )
+
         if normalize_by_demand:
             total_demand = true_tm.sum()
             routed_value = total_flow / (total_demand + 1e-8)

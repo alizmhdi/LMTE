@@ -255,12 +255,6 @@ class LmteSolver(object):
                                       topology, bursty_tensor, self.edge_ids_per_path)
 
             if self.objective == 'total_flow':
-                batch_metrics = self._compute_routed_demand_metrics(split_ratios, preds, topology)
-                for total_demand, total_satisfied, routed_fraction in batch_metrics:
-                    demand_rows.append((sample_idx, total_demand, total_satisfied, routed_fraction))
-                    sample_idx += 1
-
-            if self.objective == 'total_flow':
                 result = compute_total_flows(
                     split_ratios,
                     preds,
@@ -320,44 +314,6 @@ class LmteSolver(object):
             self.accelerator.print('Average MLU: ', np.average(results))
             self.accelerator.print('Maximum MLU: ', np.max(results))
         return results
-
-    def _compute_routed_demand_metrics(self, x, targets, topology):
-        """Compute total demand, total satisfied demand and routed fraction per sample."""
-        B, _ = targets.shape
-        device = targets.device
-        scale = self.train_loader.dataset.scale
-        capacities = torch.tensor(get_capacities_from_graph(topology), device=device) / scale
-        commodities_to_paths = mask_invalid_paths(self.commodities_to_paths, self.paths_to_edges, capacities)
-
-        metrics = []
-        for i in range(B):
-            split_ratios = x[[i]]
-            current_tm = targets[[i]]
-            split_ratios = torch.transpose(split_ratios, 0, 1)
-
-            commodity_total_weight = commodities_to_paths.matmul(split_ratios)
-            paths_over_total = commodities_to_paths.transpose(0, 1).matmul(1.0 / commodity_total_weight)
-            split_ratios = split_ratios.mul(paths_over_total)
-
-            tmp_demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(current_tm.transpose(0, 1))
-            demand_on_paths = tmp_demand_on_paths.mul(split_ratios)
-
-            cap = capacities.float().unsqueeze(-1).to(device)
-            cap_clamped = cap.clamp(min=1e-8)
-            flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths)
-            max_cong = float(torch.max(flow_on_edges / cap_clamped).item())
-            sf = min(1.0, 1.0 / max_cong) if max_cong > 0 else 1.0
-            total_satisfied_demand = demand_on_paths.sum() * sf
-            total_demand = current_tm.sum()
-            routed_fraction = total_satisfied_demand / (total_demand + 1e-8)
-            metrics.append(
-                (
-                    float(total_demand.item()),
-                    float(total_satisfied_demand.item()),
-                    float(routed_fraction.item()),
-                )
-            )
-        return metrics
 
     def add_failures(self, num_failures=1):
         """
@@ -430,30 +386,62 @@ class LmteSolver(object):
         capacities = capacities.float().unsqueeze(-1)
 
         for i in range(B):
-            split_ratios = x[[i]]
-            current_tm = targets[[i]]
-            split_ratios = torch.transpose(split_ratios, 0, 1)
+            current_tm = targets[[i]]  # [1, num_commodities]
 
-            commodity_total_weight = commodities_to_paths.matmul(split_ratios)
-            paths_over_total = commodities_to_paths.transpose(0, 1).matmul(1.0 / commodity_total_weight)
-            split_ratios = split_ratios.mul(paths_over_total)
-
-            tmp_demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(current_tm.transpose(0, 1)) #shape: (num_paths, 1)
-            demand_on_paths = tmp_demand_on_paths.mul(split_ratios) #shape: (num_paths, 1)
-            flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths)
-            congestion = flow_on_edges[capacities!=0].divide(capacities[capacities!=0]) #shape: (num_edges, 1)
-            max_cong = torch.max(congestion.flatten(), dim = 0).values
             if self.objective == 'total_flow':
-                scale_factor = (1.0 / max_cong).clamp(max=1.0)
-                total_demand = current_tm.sum()
-                total_flow = demand_on_paths.sum() * scale_factor
+                # DOTE formulation
+                # Step 1: normalize model output to valid split ratios (x_p sum to 1 per commodity)
+                w_p = x[[i]].transpose(0, 1)  # [num_paths, 1]
+                commodity_total_weight = commodities_to_paths.matmul(w_p)
+                paths_over_total = commodities_to_paths.transpose(0, 1).matmul(1.0 / commodity_total_weight)
+                x_p = w_p.mul(paths_over_total)
+
+                # Step 2: demand-proportional tunnel weights — DOTE's raw w_p
+                demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(
+                    current_tm.transpose(0, 1)
+                ) * x_p  # [num_paths, 1]
+
+                # Step 3: edge loads from demand-proportional weights
+                edge_loads = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths)  # [num_edges, 1]
+
+                # Step 4: γ = max_e(edge_load / c(e)) — no clamp to 1, matching DOTE reference
+                if (capacities != 0).any():
+                    gamma = (
+                        edge_loads[capacities != 0] / capacities[capacities != 0]
+                    ).max().clamp(min=1e-8)
+                else:
+                    gamma = torch.tensor(1e-8, device=device)
+
+                # Step 5: ω_p = w_p / γ — capacity-feasible flow caps
+                omega_p = demand_on_paths / gamma  # [num_paths, 1]
+
+                # Step 6: max flow per commodity = Σ_{p ∈ P_{st}} ω_p
+                max_flow_per_commodity = commodities_to_paths.matmul(omega_p)  # [num_commodities, 1]
+
+                # Step 7: f_{st} = min(max_flow_st, D_{st});  total flow = Σ_{st} f_{st}
+                total_flow = torch.sum(
+                    torch.minimum(max_flow_per_commodity, current_tm.transpose(0, 1))
+                )
 
                 if train:
-                    loss = -total_flow/(total_demand + 1e-8)
+                    loss = -total_flow if total_flow.item() == 0.0 else -total_flow / total_flow.item()
                     losses.append(loss)
                 else:
                     losses.append(total_flow.item())
+
             else:  # mlu
+                split_ratios = x[[i]].transpose(0, 1)  # [num_paths, 1]
+
+                commodity_total_weight = commodities_to_paths.matmul(split_ratios)
+                paths_over_total = commodities_to_paths.transpose(0, 1).matmul(1.0 / commodity_total_weight)
+                split_ratios = split_ratios.mul(paths_over_total)
+
+                tmp_demand_on_paths = commodities_to_paths.transpose(0, 1).matmul(current_tm.transpose(0, 1))
+                demand_on_paths = tmp_demand_on_paths.mul(split_ratios)
+                flow_on_edges = self.paths_to_edges.transpose(0, 1).matmul(demand_on_paths)
+                congestion = flow_on_edges[capacities != 0].divide(capacities[capacities != 0])
+                max_cong = torch.max(congestion.flatten(), dim=0).values
+
                 if train:
                     loss = 1.0 - max_cong if max_cong.item() == 0.0 else max_cong / max_cong.item()
                     losses.append(loss)

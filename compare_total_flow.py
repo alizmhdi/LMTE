@@ -19,6 +19,7 @@ import sys
 import argparse
 
 import numpy as np
+import pandas as pd
 import torch
 from tqdm import tqdm
 
@@ -58,11 +59,11 @@ def parse_args():
                    default='./data/Abilene/Abilene_normal.csv')
     p.add_argument('--topology', type=str, default='Abilene',
                    help='Topology name (used to locate paths.txt)')
-    p.add_argument('--num_paths', type=int, default=8,
+    p.add_argument('--num_paths', type=int, default=4,
                    help='K-shortest paths per OD pair (must match checkpoint)')
     p.add_argument('--window_size', type=int, default=12,
                    help='History window length (must match checkpoint)')
-    p.add_argument('--scale', type=float, default=1e9,
+    p.add_argument('--scale', type=float, default=1,
                    help='Normalisation scale (must match checkpoint training)')
     p.add_argument('--batch_size', type=int, default=32)
     p.add_argument('--eval_batch_size', type=int, default=1)
@@ -81,6 +82,9 @@ def parse_args():
     p.add_argument('--device', type=str, default=None,
                    help='Torch device string, e.g. "cuda:0" or "cpu"')
     p.add_argument('--seed', type=int, default=2025)
+    p.add_argument('--results_csv', type=str, default=None,
+                   help='CSV file to save/load per-sample results. '
+                        'If the file already exists the computation is skipped.')
     return p.parse_args()
 
 
@@ -142,6 +146,53 @@ def main():
     num_nodes = len(topo.nodes())
     paths_dir = f'./data/{args.topology}'
 
+    out_dir  = './results'
+    os.makedirs(out_dir, exist_ok=True)
+    csv_path = args.results_csv or os.path.join(out_dir, f'{args.topology}_total_flow_comparison.csv')
+
+    if os.path.exists(csv_path):
+        print(f'Loading cached results from {csv_path} — skipping computation.')
+        df        = pd.read_csv(csv_path)
+        lmte_arr  = df['lmte_total_flow'].to_numpy(dtype=float)
+        lp_arr    = df['lp_optimal_total_flow'].to_numpy(dtype=float)
+        n_test    = len(df)
+    else:
+        _run_inference(args, topo, num_nodes, paths_dir, device, csv_path)
+        df        = pd.read_csv(csv_path)
+        lmte_arr  = df['lmte_total_flow'].to_numpy(dtype=float)
+        lp_arr    = df['lp_optimal_total_flow'].to_numpy(dtype=float)
+        n_test    = len(df)
+
+    # ── summary stats (always runs) ───────────────────────────────────────
+    total_capacity = float(sum(get_capacities_from_graph(topo)))
+    valid    = ~np.isnan(lp_arr)
+    ratio    = lmte_arr[valid] / (lp_arr[valid] + 1e-12)
+    gaps        = (lp_arr[valid] - lmte_arr[valid]) / total_capacity
+    max_gap_idx = int(np.argmax(gaps))
+    max_gap_val = gaps[max_gap_idx]
+    orig_indices   = np.where(valid)[0]
+    max_gap_sample = orig_indices[max_gap_idx]
+
+    print('\n' + '=' * 60)
+    print('  Total-Flow Comparison  (raw capacity units)')
+    print('=' * 60)
+    print(f'  Test samples          : {n_test}  (LP solved: {valid.sum()})')
+    print(f'  Total graph capacity  : {total_capacity:.4e}')
+    print(f'  LMTE   — mean : {lmte_arr.mean():.4e}   std : {lmte_arr.std():.4e}')
+    print(f'  LP opt — mean : {lp_arr[valid].mean():.4e}   std : {lp_arr[valid].std():.4e}')
+    print(f'  LMTE / LP-opt — mean : {ratio.mean():.4f}   std : {ratio.std():.4f}'
+          f'   (1.0 = LP-optimal)')
+    print(f'  Gap (LP − LMTE) / total_capacity — mean : {gaps.mean():.4f}   std : {gaps.std():.4f}')
+    print(f'  Maximum gap / total_capacity      : {max_gap_val:.4f}'
+          f'   (sample #{max_gap_sample},'
+          f' LMTE={lmte_arr[max_gap_sample]:.4e},'
+          f' LP={lp_arr[max_gap_sample]:.4e})')
+    print('=' * 60)
+    print(f'Results CSV: {csv_path}')
+
+
+def _run_inference(args, topo, num_nodes, paths_dir, device, csv_path):
+    """Run the full LMTE + LP-optimal inference and save results to csv_path."""
     try:
         # Node-ID format: used by TotalFlowOptimal and Get_edge_to_path.
         te_paths = read_paths_from_file(
@@ -269,40 +320,13 @@ def main():
         lmte_flows.append(lmte_total)
         lp_flows.append(lp_total if lp_total is not None else float('nan'))
 
-    # ── summary ───────────────────────────────────────────────────────────
-    lmte_arr = np.array(lmte_flows)
-    lp_arr   = np.array(lp_flows)
-    valid    = ~np.isnan(lp_arr)
-    ratio    = lmte_arr[valid] / (lp_arr[valid] + 1e-12)
-
-    gaps        = lp_arr[valid] - lmte_arr[valid]   # positive = LP routes more
-    max_gap_idx = int(np.argmax(gaps))
-    max_gap_val = gaps[max_gap_idx]
-    # Map back to original sample index
-    orig_indices = np.where(valid)[0]
-    max_gap_sample = orig_indices[max_gap_idx]
-
-    print('\n' + '=' * 60)
-    print('  Total-Flow Comparison  (raw capacity units)')
-    print('=' * 60)
-    print(f'  Test samples          : {n_test}  (LP solved: {valid.sum()})')
-    print(f'  LMTE   — mean : {lmte_arr.mean():.4e}   std : {lmte_arr.std():.4e}')
-    print(f'  LP opt — mean : {lp_arr[valid].mean():.4e}   std : {lp_arr[valid].std():.4e}')
-    print(f'  LMTE / LP-opt — mean : {ratio.mean():.4f}   std : {ratio.std():.4f}'
-          f'   (1.0 = LP-optimal)')
-    print(f'  Gap (LP − LMTE) — mean : {gaps.mean():.4e}   std : {gaps.std():.4e}')
-    print(f'  Maximum gap           : {max_gap_val:.4e}'
-          f'   (sample #{max_gap_sample},'
-          f' LMTE={lmte_arr[max_gap_sample]:.4e},'
-          f' LP={lp_arr[max_gap_sample]:.4e})')
-    print('=' * 60)
-
-    # Optionally save raw numbers for further analysis.
-    out_dir = './results'
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f'{args.topology}_total_flow_comparison.npz')
-    np.savez(out_path, lmte=lmte_arr, lp_optimal=lp_arr)
-    print(f'Raw results saved to {out_path}')
+    # ── save CSV ──────────────────────────────────────────────────────────
+    pd.DataFrame({
+        'sample_idx':            range(n_test),
+        'lmte_total_flow':       lmte_flows,
+        'lp_optimal_total_flow': lp_flows,
+    }).to_csv(csv_path, index=False)
+    print(f'Results saved to {csv_path}')
 
 
 if __name__ == '__main__':

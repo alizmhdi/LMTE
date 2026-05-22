@@ -46,14 +46,6 @@ def _sample_tm_normal(
     np.fill_diagonal(tm, 0.0)
     return tm
 
-
-def _rescale_tm_to_load(tm: np.ndarray, target_total: float) -> np.ndarray:
-    current = float(tm.sum())
-    if current <= 0:
-        return tm
-    return tm * (target_total / current)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Generate synthetic TM CSV for LMTE")
     parser.add_argument("--topology", type=Path, required=True, help="Path to topology.json")
@@ -97,7 +89,7 @@ def main():
                 rng,
                 args.normal_max_demand,
             )
-
+        tm = np.clip(tm, 0.0, args.normal_max_demand)
         rows[t] = tm.reshape(-1)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
