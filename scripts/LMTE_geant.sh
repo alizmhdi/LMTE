@@ -1,7 +1,7 @@
 # Configuration variables for the LMTE (Large Language Model for Traffic Engineering) experiment on GEANT topology
 GPUs=1
 PORT=$((29500 + RANDOM % 1000))
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=1
 
 # Model and training parameters
 batch_size=32
@@ -18,7 +18,7 @@ normlized_scale=1       # Normalization scale factor
 accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_port $PORT main.py \
   --topology Abilene \
   --topology_filepath ./data/Abilene/topology.json \
-  --tm_filepath ./data/Abilene/Abilene_normal.csv \
+  --tm_filepath ./data/Abilene/Abilene_gravity.csv \
   --is_training 1 \
   --num_itrs 1 \
   --train_epochs 10 \
@@ -40,7 +40,7 @@ accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_po
 # accelerate launch --mixed_precision bf16 --num_processes $GPUs --main_process_port $PORT main.py \
 #   --topology Abilene \
 #   --topology_filepath ./data/Abilene/topology.json \
-#   --tm_filepath ./data/Abilene/Abilene_normal.csv \
+#   --tm_filepath ./data/Abilene/Abilene_gravity.csv \
 #   --is_training 0 \
 #   --num_itrs 1 \
 #   --train_epochs 10 \
