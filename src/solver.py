@@ -264,6 +264,14 @@ class LmteSolver(object):
                     scale=test_loader.dataset.scale,
                     normalize_by_demand=True,
                 )
+                scale = test_loader.dataset.scale
+                for j, routed_frac in enumerate(result):
+                    total_demand = preds[j].sum().item() * scale
+                    total_satisfied = routed_frac * total_demand
+                    demand_rows.append(
+                        (sample_idx, total_demand, total_satisfied, float(routed_frac))
+                    )
+                    sample_idx += 1
             else:
                 result = compute_mlus(
                     split_ratios,
@@ -273,11 +281,10 @@ class LmteSolver(object):
                     self.commodities_to_paths,
                     scale=test_loader.dataset.scale,
                 )
-            results += result
-            if self.objective == 'mlu':
                 for mlu_value in result:
                     mlu_rows.append((sample_idx, float(mlu_value)))
                     sample_idx += 1
+            results += result
 
         results_dir = os.path.join(self.args.result_path, f'{self.args.topology}_lmte')
         os.makedirs(results_dir, exist_ok=True)

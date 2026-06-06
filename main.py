@@ -27,7 +27,7 @@ def parse_args():
 
     # Topology-related arguments
     parser.add_argument("--topology", type=str, default='GEANT',
-                        choices=['Abilene', 'GEANT', 'CERNET', 'UsCarrier', 'Cogentco'],
+                        choices=['Abilene', 'B4', 'GEANT', 'CERNET', 'UsCarrier', 'Cogentco'],
                         help="Name of the topology to be used.")
     parser.add_argument("--topology_filepath", type=str, default='./data/GEANT/topology.json',
                         help="Name of .json file the topology was stored.")
@@ -151,7 +151,7 @@ if __name__ == '__main__':
         # Build data loaders for training, validation, and testing
         train_loader, valid_loader, test_loader = build_dataloader(args.topology_filepath, args.tm_filepath, args.batch_size,
                                                                    args.scale, args.eval_batch_size, args.window_size,
-                                                                   split_ratio=(0.7, 0.1, 0.2))
+                                                                   split_ratio=(0.8, 0.05, 0.15))
 
         # Get the maximum path length for model configuration
         max_path_length = train_loader.dataset.get_padded_edge_ids_per_path(paths).shape[-1]

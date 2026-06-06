@@ -1,13 +1,18 @@
+# PyTorch CUDA wheels (use cu121 index instead if cu124 is unavailable on your machine)
+--extra-index-url https://download.pytorch.org/whl/cu124
+
 # Core ML
-transformers>=4.30.0
+# transformers 5.x requires PyTorch 2.8+ (torch.float8_e8m0fnu); keep below 5.0 with torch 2.6
+transformers>=4.40,<5.0
 accelerate>=1.0.0
 deepspeed>=0.16.0
 mpi4py>=4.0.0
 sentencepiece==0.2.0
 
-# PyTorch ecosystem (installed with CUDA support separately)
-torch>=2.7.0
-torch_geometric>=2.6.0
+# PyTorch ecosystem
+# Do not install default PyPI torch (2.12+cu130); it requires a newer NVIDIA driver than CUDA 12.8
+torch==2.6.0+cu124
+torch_geometric>=2.6.0,<2.9.0
 
 # Scientific & graph
 pandas>=2.0.0
